@@ -25,38 +25,6 @@ def _threshold_for_color(color_name, current_thresholds):
     return None
 
 
-def find_triangle_arrow(img, current_thresholds):
-    thresh = _threshold_for_color("black", current_thresholds)
-    if not thresh:
-        return None
-
-    blobs = img.find_blobs([thresh], pixels_threshold=1000)
-    if blobs:
-        arrow_blob = max(blobs, key=lambda b: b[2] * b[3])
-
-        x, y, w, h = arrow_blob[0], arrow_blob[1], arrow_blob[2], arrow_blob[3]
-        pixels = arrow_blob[4]
-        area = w * h
-
-        fill_ratio = pixels / area if area > 0 else 0
-        if fill_ratio < 0.75:
-            mass_cx, mass_cy = arrow_blob[5], arrow_blob[6]
-            box_cx, box_cy = x + w // 2, y + h // 2
-
-            dy = mass_cy - box_cy
-            direction = "UNKNOWN"
-
-            if dy > 5:
-                direction = "AWAY"
-            elif dy < -5:
-                direction = "TOWARDS"
-
-            img.draw_rect(x, y, w, h, image.COLOR_YELLOW, thickness=2)
-            img.draw_cross(mass_cx, mass_cy, image.COLOR_RED)
-            img.draw_string(x, max(0, y - 30), f"DIR: {direction}", image.COLOR_YELLOW, scale=2)
-            return direction
-    return None
-
 
 def _blob_center(blob):
     x, y, w, h = blob[0], blob[1], blob[2], blob[3]
@@ -288,9 +256,6 @@ def _classify_shape_metrics(m):
         return "unknown", confidence, best_score
     return best_shape, confidence, best_score
 
-
-def _classify_shape(blob):
-    return _classify_shape_metrics(_blob_metrics(blob))[:2]
 
 
 def my_find_triangle(blobs, img_w, img_h, min_pixels=None):
@@ -700,12 +665,6 @@ def identify_markers_multi(img, current_thresholds, draw=True, max_results=8, de
     return [{"color": m["color"], "shape": m["shape"], "x": m["x"], "y": m["y"], "w": m["w"], "h": m["h"]} for m in kept]
 
 
-def identify_markers(img, current_thresholds, draw=True):
-    results = identify_markers_multi(img, current_thresholds, draw=draw, max_results=8)
-    if results:
-        return {"color": results[0]["color"], "shape": results[0]["shape"]}
-    return None
-
 
 def _pixel_is_foreground(pixel):
     if isinstance(pixel, int):
@@ -840,12 +799,4 @@ def draw_binary_preview(dst_img, preview_data, roi):
         dst_img.draw_rect(px, py, pw, ph, image.COLOR_WHITE, thickness=-1)
 
 
-def draw_preview(img, target_name, current_thresholds):
-    thresh = _threshold_for_color(target_name, current_thresholds)
-    if not thresh:
-        return
 
-    blobs = img.find_blobs([thresh], pixels_threshold=400)
-    if blobs:
-        b = max(blobs, key=lambda blob: blob[2] * blob[3])
-        img.draw_rect(b[0], b[1], b[2], b[3], image.COLOR_WHITE, thickness=2)
