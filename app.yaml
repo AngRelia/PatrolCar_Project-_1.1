@@ -1,0 +1,10 @@
+id: patrolcar
+name: Image Recognition
+version: 1.0.0
+author: '111'
+icon: ''
+desc: 集成黑/红/蓝/绿四色目标形状识别、方向导引算法及实时串口通信。内置独创的脱机全屏触控UI，支持赛场环境下的动态阈值精调与保存
+files:
+  - main.py
+  - tuner.py
+  - vision.py
