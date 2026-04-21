@@ -17,13 +17,6 @@ MIN_FILL_RATIO = 0.16     # 最小填充率（像素数/外接矩形面积）。
 MAX_ASPECT_RATIO = 3.4    # 最大长宽比。过滤极度细长的干扰物
 EDGE_MARGIN = 3           # 边缘留白：忽略贴着画面边缘的不完整目标
 
-# ==================== 黑色箭头方向判定参数 ====================
-# 说明：这些参数都可以通过 current_thresholds 字典中的同名键覆盖，便于现场调参。
-ARROW_MIN_PIXELS = 500             # 箭头连通域最小像素（在 detect_size 缩小图上）
-ARROW_MIN_FILL_RATIO = 0.08        # 箭头填充率下限
-ARROW_MAX_FILL_RATIO = 0.92        # 箭头填充率上限
-ARROW_TB_RATIO_DEADBAND = 0.05     # 上下像素占比差的死区阈值（避免抖动）
-
 
 def _threshold_for_color(color_name, current_thresholds):
     """从字典中安全地提取指定颜色的 LAB/灰度阈值列表"""
@@ -39,154 +32,46 @@ def _threshold_for_color(color_name, current_thresholds):
     if len(vals) >= 6:
         return [int(vals[i]) for i in range(6)]
     return None
+ 
 
-
-def _cfg_int(current_thresholds, key, default_value):
-    """从配置字典读取 int 参数，读取失败时回退默认值。"""
-    try:
-        return int(current_thresholds.get(key, default_value))
-    except Exception:
-        return int(default_value)
-
-
-def _cfg_float(current_thresholds, key, default_value):
-    """从配置字典读取 float 参数，读取失败时回退默认值。"""
-    try:
-        return float(current_thresholds.get(key, default_value))
-    except Exception:
-        return float(default_value)
-
-
-def _sum_roi_pixels_by_blobs(img, thresh, roi, fast_mode=True):
-    """在 ROI 内统计命中阈值的像素总数（基于连通域，性能远高于逐像素 get_pixel）。"""
-    rx, ry, rw, rh = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
-    if rw < 2 or rh < 2:
-        return 0
-
-    stride = 2 if fast_mode else 1
-    try:
-        blobs = img.find_blobs(
-            [thresh],
-            roi=(rx, ry, rw, rh),
-            pixels_threshold=12,
-            area_threshold=12,
-            x_stride=stride,
-            y_stride=stride,
-            merge=True,
-            margin=1,
-        )
-    except Exception:
-        try:
-            blobs = img.find_blobs([thresh], roi=(rx, ry, rw, rh), pixels_threshold=12)
-        except Exception:
-            blobs = []
-
-    if not blobs:
-        return 0
-    return int(sum(int(b[4]) for b in blobs))
-
-
-def find_triangle_arrow(img, current_thresholds, draw=True, detect_size=(320, 240)):
+def find_triangle_arrow(img, current_thresholds):
     """
-    [核心业务逻辑]：用“最大黑色连通域 + 上下像素统计”判断箭头方向（FORWARD/BACKWARD）。
-    流程：
-    1) 用黑色阈值找最大连通域；
-    2) 在其 bounding box 内，按 cy 分成上下两半统计前景像素；
-    3) bottom > top 判为箭头向下（BACKWARD），反之判为箭头向上（FORWARD）。
+    [核心业务逻辑]：寻找黑色的三角形箭头，并判断其朝向（TOWARDS/AWAY）。
+    物理原理：三角形的“重心（质心）”会偏向底边。
+    通过比较【外接矩形的几何中心】和【连通域的真实质心】在 Y 轴上的差值 (dy)，就能推断箭头指向上还是下。
     """
     thresh = _threshold_for_color("black", current_thresholds)
     if not thresh:
         return None
 
-    min_pixels = max(80, _cfg_int(current_thresholds, "arrow_min_pixels", ARROW_MIN_PIXELS))
-    min_fill = _cfg_float(current_thresholds, "arrow_min_fill", ARROW_MIN_FILL_RATIO)
-    max_fill = _cfg_float(current_thresholds, "arrow_max_fill", ARROW_MAX_FILL_RATIO)
-    ratio_deadband = _cfg_float(current_thresholds, "arrow_tb_ratio_deadband", ARROW_TB_RATIO_DEADBAND)
-    ratio_deadband = max(0.0, min(0.45, ratio_deadband))
-
-    img_w, img_h = img.width(), img.height()
-    work_img = img
-    work_w, work_h = img_w, img_h
-    if isinstance(detect_size, (tuple, list)) and len(detect_size) >= 2:
-        target_w = max(80, min(img_w, int(detect_size[0])))
-        target_h = max(60, min(img_h, int(detect_size[1])))
-        if target_w < img_w or target_h < img_h:
-            try:
-                work_img = img.resize(target_w, target_h, method=image.ResizeMethod.NEAREST)
-                work_w, work_h = work_img.width(), work_img.height()
-            except Exception:
-                work_img, work_w, work_h = img, img_w, img_h
-
-    try:
-        blobs = work_img.find_blobs(
-            [thresh],
-            pixels_threshold=min_pixels,
-            area_threshold=min_pixels,
-            x_stride=2,
-            y_stride=2,
-            merge=True,
-            margin=2,
-        )
-    except Exception:
-        try:
-            blobs = work_img.find_blobs([thresh], pixels_threshold=min_pixels)
-        except Exception:
-            blobs = []
-
+    blobs = img.find_blobs([thresh], pixels_threshold=1000)
     if blobs:
-        # 取像素数最大的黑色连通域作为箭头主体
-        arrow_blob = max(blobs, key=lambda b: b[4])
+        # 取面积最大的黑色连通域作为箭头主体
+        arrow_blob = max(blobs, key=lambda b: b[2] * b[3])
 
         x, y, w, h = arrow_blob[0], arrow_blob[1], arrow_blob[2], arrow_blob[3]
         pixels = arrow_blob[4]
-        area = max(1, w * h)
-        fill_ratio = pixels / area
+        area = w * h
 
-        # 填充率过低/过高一般都不是有效箭头轮廓
-        if min_fill <= fill_ratio <= max_fill:
-            mass_cx, mass_cy = _blob_center(arrow_blob)
-            cy = mass_cy
+        fill_ratio = pixels / area if area > 0 else 0
+        # 如果填充率极高(>0.75)，说明是个方形，不是箭头
+        if fill_ratio < 0.75:
+            mass_cx, mass_cy = arrow_blob[5], arrow_blob[6]  # 真实质心 (通过像素力矩计算)
+            box_cx, box_cy = x + w // 2, y + h // 2          # 几何中心 (外接矩形的中点)
 
-            # 性能关键：用 ROI 连通域像素统计代替逐像素扫描。
-            top_h = max(1, cy - y)
-            bottom_h = max(1, (y + h) - cy)
-            top_pixels = _sum_roi_pixels_by_blobs(work_img, thresh, (x, y, w, top_h), fast_mode=True)
-            bottom_pixels = _sum_roi_pixels_by_blobs(work_img, thresh, (x, cy, w, bottom_h), fast_mode=True)
-
-            total = max(1, top_pixels + bottom_pixels)
-            ratio = (bottom_pixels - top_pixels) / total
-
+            dy = mass_cy - box_cy # 质心相对于几何中心的 Y 轴偏移
             direction = "UNKNOWN"
-            if ratio > ratio_deadband:
-                direction = "BACKWARD"  # 下半部像素更多 -> 箭头向下
-            elif ratio < -ratio_deadband:
-                direction = "FORWARD"   # 上半部像素更多 -> 箭头向上
 
-            # 与你给的 demo 一致的原始判断语义保留如下：
-            # if bottom_pixels > top_pixels: 向下
-            # else: 向上
+            # 质心靠下(dy>5)，说明底边在下面，箭头尖端朝上（远离镜头 AWAY）
+            if dy > 5:
+                direction = "AWAY"
+            # 质心靠上(dy<-5)，说明底边在上面，箭头尖端朝下（朝向镜头 TOWARDS）
+            elif dy < -5:
+                direction = "TOWARDS"
 
-            if draw:
-                if work_w != img_w or work_h != img_h:
-                    mapped = _map_hit_to_original({"x": x, "y": y, "w": w, "h": h}, work_w, work_h, img_w, img_h)
-                    dx, dy, dw, dh = mapped["x"], mapped["y"], mapped["w"], mapped["h"]
-                    draw_cx = int((mass_cx * img_w) / max(1, work_w))
-                    draw_cy = int((mass_cy * img_h) / max(1, work_h))
-                else:
-                    dx, dy, dw, dh = x, y, w, h
-                    draw_cx, draw_cy = mass_cx, mass_cy
-
-                color = image.COLOR_YELLOW
-                if direction == "FORWARD":
-                    color = image.COLOR_GREEN
-                elif direction == "BACKWARD":
-                    color = image.COLOR_RED
-
-                img.draw_rect(dx, dy, dw, dh, color, thickness=2)
-                img.draw_cross(draw_cx, draw_cy, image.COLOR_RED)
-                img.draw_string(dx, max(0, dy - 48), f"ARROW:{direction}", color, scale=1.8)
-                img.draw_string(dx, max(0, dy - 24), f"TOP:{top_pixels} BOT:{bottom_pixels}", color, scale=1.2)
-
+            img.draw_rect(x, y, w, h, image.COLOR_YELLOW, thickness=2)
+            img.draw_cross(mass_cx, mass_cy, image.COLOR_RED)
+            img.draw_string(x, max(0, y - 30), f"DIR: {direction}", image.COLOR_YELLOW, scale=2)
             return direction
     return None
 
